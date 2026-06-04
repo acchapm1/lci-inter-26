@@ -25,8 +25,8 @@ to a registry. Consumers then automatically pull the right layer for their hardw
 │  ┌───────────────────────────────────────────────────────┐  │
 │  │  Docker Desktop                                       │  │
 │  │                                                       │  │
-│  │  BuildKit ──► native arm64 builder                   │  │
-│  │           └──► QEMU-emulated amd64 builder           │  │
+│  │  BuildKit ──► native arm64 builder                    │  │
+│  │           └──► QEMU-emulated amd64 builder            │  │
 │  └──────────────────────────┬────────────────────────────┘  │
 │                             │ --push                        │
 └─────────────────────────────┼───────────────────────────────┘
