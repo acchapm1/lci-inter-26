@@ -1,0 +1,48 @@
+#!/bin/bash
+if [[ -n ${SLURM_JOB_GPUS} ]]; then
+
+        #For dcgm_exporter to collect job metrics 
+        JOB_MAPPING_DIR="/var/run/dcgm_job_maps"
+        for GPU_ID in ${SLURM_JOB_GPUS//,/ }; do
+                truncate -s 0 "$JOB_MAPPING_DIR/$GPU_ID" 2>/dev/null
+                echo "$SLURM_JOB_ID" >> "$JOB_MAPPING_DIR/$GPU_ID" 2>/dev/null
+        done
+
+        #For dcgmi to collect stats
+        DCGMI_GROUP="DCGMI_GROUP_${SLURM_JOB_GPUS//,/}"
+        # Ensure the group exists (fallback to creating if needed)
+        #if ! dcgmi group -l | grep -q "$DCGMI_GROUP"; then
+        #    dcgmi group -c "$DCGMI_GROUP" -a ${SLURM_JOB_GPUS}
+        #fi
+
+        # Get the Group ID from JSON output (fixed)
+        DCGMI_GROUP_ID=$(dcgmi group -j -l | jq -r --arg group_name "$DCGMI_GROUP" '
+            .body.Groups.children | to_entries[] | .value.children |
+            select(.["Group Name"].value == $group_name) | .["Group ID"].value // "0"
+            ' 2>/dev/null | head -n 1)
+
+        if [[ -n "$DCGMI_GROUP_ID" ]]; then
+            dcgmi stats -g "$DCGMI_GROUP_ID" --enable #2>/dev/null
+            dcgmi stats -g "$DCGMI_GROUP_ID" -s "$SLURM_JOB_ID" #2>/dev/null
+        fi
+
+
+fi
+#if [[ -n ${CUDA_VISIBLE_DEVICES} ]]; then
+#  readonly GPU_UUID=$(nvidia-smi --query-gpu=uuid --format=csv,noheader)
+#  REAL_GPU_INDEX=""
+#  for uuid in $GPU_UUID; do
+#        index=$(grep $uuid /opt/nvidia-uuid-mapping | cut -d',' -f 1)
+#        if [[ -n $index ]]; then
+#            if [[ -z $REAL_GPU_INDEX ]]; then
+#                REAL_GPU_INDEX="$index"
+#            else
+#                REAL_GPU_INDEX="$REAL_GPU_INDEX,$index"
+#            fi
+#        fi
+#  done
+#  dcgmi group -c ${SLURM_JOB_ID}-${USER} -a $REAL_GPU_INDEX
+#  DCGMI_JOB_GROUP_ID=$(dcgmi group -l | grep -B 1 ${SLURM_JOB_ID}-${USER} | grep "Group ID" | cut -d'|' -f 3)
+#  dcgmi stats -g $DCGMI_JOB_GROUP_ID --enable
+#  dcgmi stats -g $DCGMI_JOB_GROUP_ID -s ${SLURM_JOB_ID}
+#fi

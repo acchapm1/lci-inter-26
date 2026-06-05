@@ -1,0 +1,47 @@
+#!/bin/bash
+# 2023 Jason <yalim@asu.edu>
+#
+# This will allocate compute node resources.
+# Then ssh is used to connect to the node.
+#
+##
+set -euo pipefail
+
+close_allocation() {
+  local job_id="$1"
+  scancel $job_id
+}
+
+readonly opts=(
+  --no-shell
+  -p lightwork
+  -q public
+  -N 1-1
+  -c 1
+  -t 0-1
+  $@ 
+)
+# Submit the job and get nodelist
+mapfile -t jobid_nodelist < <( 
+  salloc "${opts[@]}" 2>&1 \
+    | tee /dev/stderr      \
+    | awk '
+      /Granted job allocation *.*/ {print $NF} 
+      /Nodes *.* are ready for job/ {print $3}
+    '
+)
+if (( ${#jobid_nodelist[@]} == 0)); then
+  printf 'Errors encountered\n'
+  exit 1
+fi
+
+readonly jobid=${jobid_nodelist[0]}
+readonly nodelist=${jobid_nodelist[-1]}
+
+trap "close_allocation $jobid" 0 1 2 3 4 5 6 7 9
+
+# get first node in nodelist
+readonly node=$(scontrol show hostnames $nodelist | head -n 1)
+# connect to node with X11 forwarding enabled
+ssh -Y $node
+set -x

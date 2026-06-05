@@ -1,0 +1,75 @@
+#!/bin/bash
+
+source /etc/profile.d/slurm.sh
+readonly this_script=$(basename $0)
+readonly jobid="$SLURM_JOBID"
+
+# Stop collected GPU job stats
+if [[ -n ${SLURM_JOB_GPUS} ]]; then
+
+        #For dcgm_exporter to collect job metrics 
+        JOB_MAPPING_DIR="/var/run/dcgm_job_maps"
+        for GPU_ID in ${SLURM_JOB_GPUS//,/ }; do
+                truncate -s 0 "$JOB_MAPPING_DIR/$GPU_ID" 2>/dev/null || true
+                (echo "0" >> "$JOB_MAPPING_DIR/$GPU_ID") 2>/dev/null || true
+        done
+fi
+
+
+# skip all epilog work if requested
+if [[ "${SLURM_SKIP_EPILOG:-}" = "1" ]]; then
+  exit 0
+fi
+
+if [[ -z "$jobid" ]]; then
+  cat &> /dev/stderr << __EOF
+
+  ERROR -- $this_script must only be invoked for slurm jobs
+  ERROR -- ... no job id was found 
+
+__EOF
+  exit 1
+fi
+
+readonly whoami=$(whoami)
+readonly home_dir=$(getent passwd $whoami | cut -d: -f6)
+
+# If the user home directory does not exit, then stop
+if ! [[ -d "$home_dir" ]]; then
+  cat &> /dev/stderr << __EOF
+
+  ERROR -- \$HOME was set to: "$home_dir", 
+  ERROR -- ... and not found, quitting.
+__EOF
+  exit 1
+fi
+
+readonly sdir="${home_dir}/.local/var/log/slurm"
+readonly srec="${sdir}/slurm_record_$jobid"
+readonly srs="__SLURM_REC__" # record separator for awk parsing
+
+! [[ -d "$sdir" ]] && mkdir -p "$sdir" || :
+
+mkrecsep() {
+  printf "\n${srs}\n" 
+}
+
+# Record efficiency with seff
+#printf "$ seff $jobid\n\n" > $srec
+#seff $jobid >> $srec
+mkrecsep >> $srec
+
+# Record job details
+printf "$ scontrol show job --details $jobid\n\n" >> $srec
+scontrol show job --details $jobid >> $srec
+mkrecsep >> $srec
+
+# Record if job is interactive, else attempt to record batch script
+if [[ "$SLURM_JOB_NAME" == "_interactive" ]]; then
+  printf "> Check ~/.bash_history for commands executed during this session" >> $srec
+elif [[ "$SLURM_JOB_NAME" == "interactive" ]]; then
+  printf "> Check ~/.bash_history for commands executed during this session" >> $srec
+else  
+  printf "$ scontrol write batch_script $jobid\n\n" >> $srec
+  scontrol write batch_script $jobid - >> $srec
+fi

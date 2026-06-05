@@ -1,0 +1,108 @@
+#!/bin/bash
+
+export PATH="/packages/apps/slurm-$(uname -m)/current/bin:$PATH"
+readonly this_script=$(basename $0)
+readonly jobid="$SLURM_JOBID"
+
+if [[ -z "$jobid" ]]; then
+  cat &> /dev/stderr << __EOF
+
+  ERROR -- $this_script must only be invoked for slurm jobs
+  ERROR -- ... no job id was found 
+
+__EOF
+  exit 1
+fi
+
+# skip all epilog work if requested
+if [[ "${SLURM_SKIP_EPILOG:-}" = "1" ]]; then
+  exit 0
+fi
+
+readonly whoami=$(whoami)
+readonly home_dir=$(getent passwd $whoami | cut -d: -f6)
+
+# If the user home directory does not exit, then stop
+if ! [[ -d "$home_dir" ]]; then
+  cat &> /dev/stderr << __EOF
+
+  ERROR -- \$HOME was set to: "$home_dir", 
+  ERROR -- ... and not found, quitting.
+__EOF
+  exit 1
+fi
+
+readonly sdir="${home_dir}/.local/var/log/slurm"
+readonly srec="${sdir}/slurm_record_$jobid"
+readonly srs="__SLURM_REC__" # record separator for awk parsing
+
+! [[ -d "$sdir" ]] && mkdir -p "$sdir" || :
+
+# Check if job details were already recorded, exit early if they are
+if [[ -f "$srec" ]] && grep -q "scontrol show job --details $jobid" "$srec"; then
+    exit 0
+fi
+
+mkrecsep() {
+  printf "\n${srs}\n" 
+}
+
+mkrecsep >> $srec
+# Record job details
+printf "$ scontrol show job --details $jobid\n\n" >> $srec
+scontrol show job --details $jobid >> $srec
+
+# Record if job is interactive, else attempt to record batch script
+if [[ "$SLURM_JOB_NAME" == "_interactive" ]]; then
+  printf "> Check ~/.bash_history for commands executed during this session" >> $srec
+elif [[ "$SLURM_JOB_NAME" == "interactive" ]]; then
+  printf "> Check ~/.bash_history for commands executed during this session" >> $srec
+else  
+  printf "$ scontrol write batch_script $jobid\n\n" >> $srec
+  scontrol write batch_script $jobid - >> $srec
+fi
+
+# Record efficiency with seff
+#printf "$ seff $jobid\n\n" > $srec
+#seff $jobid >> $srec
+
+# DEV - record GPU statistics if there was a GPU Job
+if [[ -n "${SLURM_JOB_GPUS}" ]]; then
+    # Stop collecting stats
+    dcgmi stats -x ${SLURM_JOB_ID} 2>/dev/null || true
+    STATS_OUTPUT=$(dcgmi stats -v -j ${SLURM_JOB_ID} | tail -n +2 | grep -Ev "Not Supported|N/A")
+    printf "\n\nGPU Usage:\n" >> "$srec"
+    echo "$STATS_OUTPUT" >> "$srec"
+
+    if [[ -n "${STATS_OUTPUT}" ]]; then
+
+      # Extract Max GPU Memory Used (sum across all GPUs) and convert to GiB (rounded to 1 decimal place)
+      MAX_GPU_MEMORY_USAGE=$(echo "$STATS_OUTPUT" | awk -F'|' '/Max GPU Memory Used/ {sum += $3} END {printf "%.1f\n", sum / (1024^3)}')
+
+      # Get GPU type and total memory (sum across all allocated GPUs)
+      GPU_INFO=$(nvidia-smi --query-gpu=name,memory.total --format=csv,noheader,nounits)
+      GPU_TYPE=$(echo "$GPU_INFO" | awk -F', ' '{printf "%s", $1}' | head -n 1) # Assumes all GPUs are the same type
+      GPU_MEM=$(echo "$GPU_INFO" | awk -F', ' '{sum += $2} END {printf "%.0f", sum / 1024}')
+
+      # Handle the case where no GPU memory was used
+      if [[ "$MAX_GPU_MEMORY_USAGE" == "0.0" ]]; then
+          GPU_EFFICIENCY="0.0"
+      else
+          GPU_EFFICIENCY=$(awk "BEGIN {printf \"%.1f\", (${MAX_GPU_MEMORY_USAGE} / ${GPU_MEM}) * 100}")
+      fi
+
+      # Write stats to Slurm job record file 
+      echo "GPU Memory Utilized: ${MAX_GPU_MEMORY_USAGE} GiB"  >> "$srec"
+      echo "GPU Memory Efficiency: ${GPU_EFFICIENCY}% of ${GPU_MEM} GiB" >> "$srec"
+
+      # Log metrics to system logs
+      logger -t GPUJobMetrics "user=$USER host=$(hostname --long) job=$SLURM_JOB_ID gpuType=\"$GPU_TYPE\" maxGpuMemoryUsed=${MAX_GPU_MEMORY_USAGE} gpuEfficiency=${GPU_EFFICIENCY}%"
+    else
+      echo "GPU Stats Unkown" >> "$srec"
+    fi
+fi
+
+mkrecsep >> $srec
+
+
+

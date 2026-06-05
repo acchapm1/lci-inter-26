@@ -1,0 +1,30 @@
+#!/bin/bash
+
+usage() {
+    echo "Usage: $0 <JOBID>"
+    echo "   or ensure the SLURM_JOB_ID environment variable is set."
+    echo
+    echo "Description:"
+    echo "This script retrieves slurm job information based on the provided JOBID or the SLURM_JOB_ID environment variable."
+    echo
+    echo "Slurm job information is fetched via 'squeue' and 'scontrol show job --details <jobid>;'."
+    echo
+    exit 1
+}
+
+thisjob () {
+    squeue -j $@ > /dev/null 2>&1;
+        if (( $? != 0 )); then
+            echo -e "\nError locating job\n";
+            return 1;
+        fi;
+    squeue -o "%10i %9P %18j %14u %12T %12M %12l %5C %40R" -j $1;
+    echo -e "\n";
+    scontrol show job --details $1;
+    echo -e "\n";
+}
+
+JOBID=${1:-$SLURM_JOB_ID}
+[[ -z $JOBID ]] && usage
+
+thisjob "$JOBID"

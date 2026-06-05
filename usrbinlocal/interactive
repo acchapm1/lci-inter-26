@@ -1,0 +1,21 @@
+#!/bin/bash
+# 2024 
+# Willy Dizon <wdizon@asu.edu>
+# Jason <yalim@asu.edu>
+# Josh Burks <jeburks2@asu.edu>
+#
+# Allocates interactive compute node resources.
+#
+##
+readonly opts=(
+  -p htc
+  -q public
+  -N 1-1
+  -c 1
+  -t 0-4
+  # only pass --x11 flag if DISPLAY is set
+  ${DISPLAY:+--x11}
+  $@ 
+)
+
+salloc "${opts[@]}" 

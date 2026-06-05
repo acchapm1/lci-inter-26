@@ -1,0 +1,24 @@
+#!/bin/bash
+
+vscode() {
+  : << __HELPSTRING
+  # ===================================================================
+  # Start a session for the VSCode CLI Server daemon
+  # ===================================================================
+__HELPSTRING
+  local opts=(
+    -q public 
+    -p lightwork 
+    -t 1-0
+    $@
+  )
+  code_opts=(
+  --accept-server-license-terms
+  --disable-telemetry
+  --cli-data-dir "/home/${USER}/.vscode/"
+  --name "sol_${USER}"
+  )
+  srun "${opts[@]}" /packages/apps/vscode/latest/bin/code tunnel "${code_opts[@]}" 
+}
+
+vscode "$@"

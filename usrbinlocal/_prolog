@@ -1,0 +1,11 @@
+#!/bin/bash
+if [[ -n ${SLURM_JOB_GPUS} ]]; then
+
+        #For dcgm_exporter to collect job metrics 
+        JOB_MAPPING_DIR="/var/run/dcgm_job_maps"
+        for GPU_ID in ${SLURM_JOB_GPUS//,/ }; do
+                truncate -s 0 "$JOB_MAPPING_DIR/$GPU_ID" 2>/dev/null || true
+                (echo "$SLURM_JOB_ID" >> "$JOB_MAPPING_DIR/$GPU_ID") 2>/dev/null || true
+        done
+fi
+exit 0

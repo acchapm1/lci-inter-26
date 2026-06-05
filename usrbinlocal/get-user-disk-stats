@@ -1,0 +1,144 @@
+#!/bin/bash
+# BLAME: Jason <yalim@asu.edu>
+readonly uid="${1:-$(id -u)}"
+readonly gid="${2:-$(id -g)}"
+
+readonly username=$(id -un $uid)
+readonly groupname=$(id -gn $uid)
+readonly uid_stats=$(beegfs-ctl --getquota --uid $uid | tail -1)
+readonly gid_stats=$(beegfs-ctl --getquota --gid $gid | tail -1)
+
+readonly homestats=$(
+  df -B 1 \
+  | awk -F ' ' -v userhome="/home/$username" '
+    $0 ~ userhome {
+      limit   = $2
+      use     = $3
+      avail   = $4 # unused
+      percent = $5
+      df_path = $6
+      
+      fmt_use   = use / 2^30
+      fmt_limit = limit / 2^30
+      fmt_percent= use/limit*100
+      
+      printf("%s|%5.1f GiB|%5.1f GiB|%5.1f%%%%|NA|NA|NA\n", df_path, fmt_use, fmt_limit, fmt_percent)
+    }
+')
+
+cat << EOF
+                ---------- STORAGE ---------- ---------- INODES ----------
+EOF
+printf "$uid_stats\n$gid_stats\n$homestats\n" \
+  | awk -v user=$username -v group=$groupname -v uid=$uid -v gid=$gid -F '[ \\|]+'  '
+    BEGIN{
+      print "quota|usage|limit|use|inodes|limit|use"
+      L["Bytes"] = 1
+      L["Byte"]  = 1
+      L["B"]     = 1
+      L["KiB"]   = 1024
+      L["MiB"]   = 2^20
+      L["GiB"]   = 2^30
+      L["TiB"]   = 2^40
+      L["PiB"]   = 2^50
+      desc[user] = "USER"
+      desc[uid]  = "USER"
+      desc[group]= "GROUP"
+      desc[gid]  = "GROUP"
+    } 
+    
+    # beegfs stats assuming none unlimited
+    NR < 3 && $6 !~ /unlimited/ {
+      # cols:    
+      # $1  : EMPTY
+      # $2  : user/group
+      # $3  : id
+      # $4  : use_factor
+      # $5  : use_base
+      # $6  : uselimit_factor
+      # $7  : uselimit_base
+      # $8  : inode_use
+      # $9  : inode_limit
+      # debug loop to bring cols:
+      # for ( k=1; k<=NF; k++ )
+      #   print k, $k
+      what            = $2
+      id              = $3
+      use_factor      = $4
+      use_base        = $5
+      uselimit_factor = $6
+      uselimit_base   = $7
+      inode_use       = $8
+      inode_limit     = $9
+      use_bytes       = use_factor * L[use_base]
+      use_limit_bytes = uselimit_factor * L[uselimit_base]
+      use_size_ratio  = use_bytes/use_limit_bytes
+      if ( inode_limit + 0 > 0 ) {
+        inode_ratio = inode_use / inode_limit
+        inode_perc  = sprintf("%5.1f%%",inode_ratio*100)
+      } else {
+        inode_ratio = inode_limit
+        inode_perc  = "NA"
+      }
+      description = desc[what] " /scratch"
+      #        1     2  3     4  5  6       7  8  9
+      printf("%s|%5.1f %s|%5.1f %s|%5.1f%%|%s|%s|%s|\n", 
+        description, 
+        use_factor, 
+        use_base, 
+        uselimit_factor, 
+        uselimit_base, 
+        use_size_ratio*100, 
+        inode_use, 
+        inode_limit, 
+        inode_perc )
+    }
+
+    # beegfs stats assuming no storage limits
+    NR < 3 && $6 ~ /unlimited/ {
+      # cols:    
+      # $1  : EMPTY
+      # $2  : user/group
+      # $3  : id
+      # $4  : use_factor
+      # $5  : use_base
+      # $6  : uselimit
+      # $7  : inode_use
+      # $8  : inode_limit
+      # debug loop to bring cols:
+      # for ( k=1; k<=NF; k++ )
+      #   print k, $k
+      what            = $2
+      id              = $3
+      use_factor      = $4
+      use_base        = $5
+      uselimit        = $6
+      inode_use       = $7
+      inode_limit     = $8
+      use_bytes       = use_factor * L[use_base]
+      inode_perc      = "NA"
+      description     = desc[what] " /scratch"
+      if ( what == group )
+        inode_use = inode_limit
+      #        1     2  3 4- -  5  6---
+      #        1     2  3 45 6  7  8  9
+      printf("%s|%5.1f %s|%s|NA|%s|%s|NA|\n", 
+        description, 
+        use_factor, 
+        use_base, 
+        uselimit, 
+#       "NA",  # limit
+#       "",    # limit base
+#       "NA",  # percent
+        inode_use, 
+        $NF) 
+#       inode_perc )
+    }
+    
+    # home stats
+    NR == 3 {
+      print $0
+    }
+  ' \
+ | sed 's/||/|/g' \
+ | column -ts\| -R1,2,3,4,5,6,7

@@ -1,0 +1,83 @@
+#!/bin/bash
+# Print out information about the node
+# Blame: Josh Burks <jeburks2@asu.edu>
+# Modifed shell function into bash script
+
+NODE="sc003"
+NODESTATUS=$(timeout 5 scontrol show nodes -o $NODE)
+ALLOCCPU=$(grep -o 'CPUAlloc=[0-9]*' <<< "$NODESTATUS" | cut -d'=' -f2)
+ALLOCMEM=$(grep -o 'AllocMem=[0-9]*' <<< "$NODESTATUS" | cut -d'=' -f2)
+ALLOCGPU=$(grep -oP 'AllocTRES=[^ ]*gres/gpu=\K[0-9]+' <<< "$NODESTATUS")
+WWCONFIG=$(</warewulf/config)
+IPMIADDRESS=$(awk -F'=' '/WWIPMI_IPADDR=/ {gsub(/"/, "", $2); print $2}' <<< "$WWCONFIG")
+IPMIADDRESS=${IPMIADDRESS:-$(ipmitool lan print | awk -F': ' '/^IP Address[[:space:]]*:/{print $2; exit}')}
+DISTRIBUTION=$(< /etc/redhat-release)
+CMDLINE=$(< /proc/cmdline)
+KERNEL=$(uname -r -v)
+
+
+echo -e "\nNode State:"
+echo $NODESTATUS | grep --color=auto -o 'State=[^ ]*';
+echo $NODESTATUS | grep --color=auto -o 'Reason=.*';
+
+[ -n "$ALLOCCPU" ] && echo -e "Allocated: $ALLOCCPU Cores / $ALLOCMEM MiB $( [ -n "$ALLOCGPU" ] && echo "/ $ALLOCGPU GPUs")"
+echo -e "\nJobs:\n"                                                             
+                                                                                
+/bin/ps afwwux | /bin/grep -i '[s]lurmstepd:' | /bin/grep -o '\[.*\]' | /bin/grep -o '[0-9]*' | /usr/bin/sort -u;
+
+echo -e ""
+echo -e "Load Average:\t$(awk '{print $1, $2, $3}' /proc/loadavg)"
+echo -e "Memory (Used/Total):\t$(awk '/Mem:/ {print $3 " / " $2}' <(free -h))"
+                                                
+echo -e "\nProcesses:\n"                                                        
+                                                                                
+/bin/ps afwwux \
+  | /bin/grep -E -v 'root|rpc|dbus|ntp|exim|xfs|nscd|nslcd|munged|node_exporter|dcgm_exporter|systemd_exporter|chrony|promtail|consul|polkitd^68'         
+                                                                                
+echo ""
+echo -e "Node Owner:\t$(awk -F'=' '/NODE_OWNER=/ {print $2; found=1} END {if (!found) print "UNKNOWN"}' <<< "$WWCONFIG")"
+echo -e "Vendor:\t\t$(dmidecode -s system-manufacturer)"
+echo -e "Model:\t\t$(dmidecode -s system-product-name)"
+echo -e "Serial:\t\t$(dmidecode -s system-serial-number)"
+echo -e "BIOS:\t\t$(dmidecode -s bios-version)"
+echo -e "BIOS Date:\t$(dmidecode -s bios-release-date)"
+echo -e "Architecture:\t$(/packages/apps/spack/21/bin/spack arch | cut -d'-' -f3)"                                       
+echo -e "CPU:\t\t$(awk -F': ' '/model name/ {gsub(/^[ \t]+/, "", $2); cpu[$2]} END {for (c in cpu) print c}' /proc/cpuinfo)"
+RACK=$(grep 'RACK=' <<< "$WWCONFIG" | cut -d'=' -f2)
+[ -n "$RACK" ] && echo -e "Location:\t$RACK U$(awk -F'=' '/RACK_UNIT=/ {print $2}' <<< "$WWCONFIG")"
+echo -e "IPMI Address:\thttps://$IPMIADDRESS"
+echo ""
+echo -e "Container Name:\t$(awk -F'=' '/WWCONTAINER=/ {print $2}' <<< "$WWCONFIG")"
+echo -e "Distribution:\t$DISTRIBUTION"
+echo -e "Kernel:\t\t$KERNEL"
+
+                                                                                
+echo ""
+echo -e "Parameters:\t$CMDLINE"
+echo ""
+                                                                                
+echo -e "Booted: $(uptime -s) $(uptime -p)"
+
+UNITS=( wwclient.service 
+        sssd.service
+        autofs.service
+        beegfs-client.service
+        systemd_exporter.service
+        node_exporter.service
+        promtail.service
+        consul.service
+        packages.mount
+        sysadmin.mount )
+
+
+UNITS+=(slurmd.service)
+
+
+
+
+
+for unit in "${UNITS[@]}"; do
+    systemctl is-active --quiet "$unit" || echo -e "\033[0;31mWARNING: $unit is inactive!\033[0m"  
+done
+                                                                                                                                                           
+echo ""

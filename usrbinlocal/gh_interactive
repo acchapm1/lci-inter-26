@@ -1,0 +1,24 @@
+#!/bin/bash
+# 2024 
+# Willy Dizon <wdizon@asu.edu>
+# Jason <yalim@asu.edu>
+# Josh Burks <jeburks2@asu.edu>
+#
+# Allocates interactive gracehopper resources.
+#
+##
+readonly opts=(
+  -p arm
+  -q public
+  -N 1-1
+  -c 1
+  -t 0-4
+  -G 1
+  --mem=0
+  --exclusive
+  # only pass --x11 flag if DISPLAY is set
+  ${DISPLAY:+--x11}
+  $@ 
+)
+
+salloc "${opts[@]}" 

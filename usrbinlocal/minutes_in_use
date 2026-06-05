@@ -1,0 +1,78 @@
+#!/bin/bash                                                                     
+# ============================================================================= 
+# Version 2.0 of minutes_in_use                                                 
+# Changes: Using awk to parse squeue rather than bash                           
+# Blame: Jason <yalim@asu.edu>                                                  
+#                                                                               
+# DESCRIPTION                                                                   
+# This script returns how many CPU minutes are being held by every running and  
+# pending job for a specified user, account, and qos.                           
+#
+# WARNING
+# THIS IS BROKEN ON SOL, WHICH CHARGES FOR MEMORY AND GPU
+# ============================================================================= 
+                                                                                
+#set -x                                                                         
+DEBUG=Y                                                                         
+DEBUG=N                                                                         
+                                                                                
+if (( $# != 3 )); then                                                          
+  echo "Syntax : $0 slurm_account username  QOS"
+  echo "Example: $0  grp_rcadmins wdizon public"
+  exit                                                                          
+fi                                                                              
+                                                                                
+readonly slurm_account=${1:?--ERROR must pass a slurm account}                                                                      
+readonly username=${2:?--ERROR must pass a username}
+readonly searchqos=$3                                                                    
+                                                                                
+readonly fmt_str="%t,%A,%l,%C,%q"                                                        
+readonly sq_opts=(                                                                       
+  -o "$fmt_str"                                                                 
+  -A "$slurm_account"                                                                 
+  -u "$username"                                                                
+  --qos="$searchqos"                                                            
+)                                                                               
+                                                                                
+squeue "${sq_opts[@]}" 2>/dev/null | awk -F ',' -v DEBUG="$DEBUG" '
+
+function get_cpu_minutes(cpus,time_string) {
+  days = 0                                                                      
+  sub_time = time_string                                                        
+  if ( time_string ~ /-/ ) {                                                    
+    split(time_string,time_arr,"-")                                             
+    days     = time_arr[1]+0                                                    
+    sub_time = time_arr[2]                                                      
+  }                                                                             
+  split(sub_time,time_arr,":")                                                  
+  hours   = time_arr[1]+0                                                       
+  minutes = time_arr[2]+0                                                       
+  total_minutes = minutes + 60 * ( hours + 24 * days )                          
+  return cpus*total_minutes                                                     
+}                                                                               
+                                                                                
+BEGIN{                                                                          
+  if ( DEBUG == "Y" ) {                                                         
+    print "STATE,JOBID,TIMELIMIT,CPUS,QOS,CPUMINS,SUM_CPUMINS"                  
+  }                                                                             
+  sum_cpu_mins=0                                                                
+}                                                                               
+                                                                                
+# Skip over header row                                                          
+NR>1 {                                                                          
+  STATE     = $1                                                                
+  JOBID     = $2                                                                
+  TIMELIMIT = $3                                                                
+  CPUS      = $4                                                                
+  QOS       = $5                                                                
+  cpu_mins  = get_cpu_minutes(CPUS,TIMELIMIT)                                   
+  sum_cpu_mins += cpu_mins                                                      
+  if ( DEBUG == "Y" ) {                                                         
+    print STATE,JOBID,TIMELIMIT,CPUS,QOS,cpu_mins,sum_cpu_mins                  
+  }                                                                             
+} 
+
+END {                                                                           
+  print sum_cpu_mins                                                            
+}                                                                               
+'

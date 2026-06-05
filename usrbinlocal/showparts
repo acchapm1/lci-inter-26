@@ -1,0 +1,112 @@
+#!/bin/bash
+# Blame me: Jason Yalim <yalim@asu.edu>
+# ===================================================================
+# sinfo wrapper to print out the partition list with utilization info
+# 
+#   Use colors to indicate partition status:
+# 
+#     High Avail: Nodes Available
+#          Avail: Full nodes unavail, Cores Available
+#        Unavail: nodes and cores unavailable
+#
+# ===================================================================
+
+join_arr() {
+  : << __HELPSTRING
+  # ===================================================================
+  # Helper bash function to join arrays into a string by passed char.
+  # -------------------------------------------------------------------
+  # EXAMPLE USAGE:
+  # 
+  #   join_char , ${bash_array[@]}
+  # 
+  # ===================================================================
+__HELPSTRING
+  local join_char="${1}"
+  shift
+  echo $(IFS=${join_char}; echo "${*}")
+}
+
+showparts() {
+  local fmt_opts=(
+    partitionname:.15
+    nodes:.6
+    nodeai:.12
+    cpusstate:.22
+    gres:.20
+  )
+
+  local fmt=$(join_arr , "${fmt_opts[@]}")
+  sinfo --Format="${fmt}" ${@} | awk '
+    BEGIN{
+      TRUE     = 1
+      FALSE    = 0
+      IS_AVAIL = TRUE
+  
+      black   = "black"
+      red     = "red"
+      green   = "green"
+      yellow  = "yellow"
+      blue    = "blue"
+      magenta = "magenta"
+      cyan    = "cyan"
+      white   = "white"
+      gray    = "gray"
+      
+      NODE_AVAIL_COLOR = green
+      CORE_AVAIL_COLOR = yellow
+      NONE_AVAIL_COLOR = gray
+  
+      colors[black]   = 0
+      colors[red]     = 1
+      colors[green]   = 2
+      colors[yellow]  = 3
+      colors[blue]    = 4
+      colors[magenta] = 5
+      colors[cyan]    = 6
+      colors[white]   = 7
+      colors[gray]    = 8
+    }
+    function print_color(color,line) {
+      print "\033[38;05;"colors[color]"m"line"\033[0m"
+    }
+    function get_node_status(node_str) {
+      split(node_str,nodes,"/")
+      num_avail = nodes[2]
+      avail = FALSE
+      if ( num_avail > 0 ) {
+        avail = TRUE
+      }
+      return avail
+    }
+    function get_core_status(core_str) {
+      split(core_str,cores,"/")
+      num_avail = cores[2]
+      avail = FALSE
+      if ( num_avail > 0 ) {
+        avail = TRUE
+      }
+      return avail
+    }
+    function get_status(node_status,core_status) {
+      color = NONE_AVAIL_COLOR
+      if ( node_status == IS_AVAIL ) {
+        color = NODE_AVAIL_COLOR
+      } else if ( core_status == IS_AVAIL ) {
+        color = CORE_AVAIL_COLOR
+      }
+      return color
+    }
+    NR==1 { print $0 }
+    NR > 1 {
+      node_str = $3
+      core_str = $4
+      node_status = get_node_status(node_str)
+      core_status = get_core_status(core_str)
+      status_color= get_status(node_status,core_status)
+      print_color(status_color,$0)
+    }
+  '
+}
+
+showparts "$@"

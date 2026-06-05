@@ -1,0 +1,18 @@
+#!/bin/bash
+join_arr() {
+  : << __HELPSTRING
+  # ===================================================================
+  # Helper bash function to join arrays into a string by passed char.
+  # -------------------------------------------------------------------
+  # EXAMPLE USAGE:
+  # 
+  #   join_char , ${bash_array[@]}
+  # 
+  # ===================================================================
+__HELPSTRING
+  local join_char="${1}"
+  shift
+  echo $(IFS=${join_char}; echo "${*}")
+}
+
+join_arr "$@"

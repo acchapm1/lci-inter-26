@@ -1,0 +1,78 @@
+#!/bin/bash
+
+set -euo pipefail
+
+readonly DEFAULT="DEFAULT"
+
+readonly user=${1:-$USER}
+acct=${2:-$DEFAULT}
+
+if [[ $user == "root" ]]; then
+  exit
+fi
+
+# Get default account for this user if none are specified
+if [[ "$acct" == "$DEFAULT" ]]; then
+  acct=$(sacctmgr -nP show user where user=$user format=defaultaccount)
+  # Fail if an empty account is found
+  if [[ -z "$acct" ]] ; then
+    echo "Warning: default account was not found for user: $user - please contact RC Support for assistance: links.asu.edu/rc-support"
+    exit 1
+  fi
+fi
+
+readonly dampenfactor=$(
+  timeout 5 scontrol show config \
+    | awk '/DampeningFactor/ {print $NF}'
+)
+
+# Get CHE and real fairshare
+readonly arr=( $(
+  sshare -nPA $acct -u $user -o User,RawUsage,FairShare \
+    | awk -F'|' -v u=$user -v dampenfactor=$dampenfactor '
+      $1 == u {
+        RawUsage = $2
+        fshare   = $3
+        RawUsage_CHE = RawUsage/3600
+        if ( 0 < fshare && fshare < 1 ) {
+          N = -RawUsage_CHE/(log(fshare)/log(2))
+        } else if ( fshare == 0 ) {
+          N = -RawUsage_CHE/(log(1e-7)/log(2))
+        } else {
+          N = 1
+        }
+        Target_fshare = 2^(-RawUsage_CHE/10000)
+        Real_fshare   = 2^(-RawUsage_CHE/(N*dampenfactor))
+        printf("%.1f %s",RawUsage_CHE, Real_fshare)
+      }
+    '
+  )
+)
+readonly corehours=${arr[0]}
+readonly fairshare=${arr[1]}
+
+##############################################################################
+## BROKEN UNTIL minutes_in_use script is updated to track TRES correctly
+# Determine cost of running jobs in public qos
+#readonly running_corehours=$(./minutes_in_use $default_account $user public | awk '{printf("%.1f",$1/60)}')
+##############################################################################
+
+##############################################################################
+## DO NOT EXCEED 78 columns in output
+# The line below represents the maximum width that this output should occupy
+##############################################################################
+cat << EOF
+
+For $user in $acct, FairShare (0 min., 1 max.): $fairshare 
+due to $corehours core-hour equivalents (CHE) of usage.
+
+FairShare linearly boosts the priority of all jobs. It is determined from 
+CHE usage, which decays exponentially with a half-life of one week. GPUs are
+tracked as 20 to 25 CHE per hour of use. Every 4 GiB of allocated memory are
+recorded as 1 CHE per hour of use. All jobs will schedule and run.
+
+EOF
+##############################################################################
+# The line above represents the maximum width that this output should occupy
+## DO NOT EXCEED 78 columns in output
+##############################################################################

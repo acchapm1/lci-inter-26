@@ -1,0 +1,89 @@
+#!/bin/bash
+# Blame me: Jason Yalim <yalim@asu.edu>
+# ===================================================================
+# scontrol show nodes wrapper to print out gpu allocation info
+# ===================================================================
+showgpus() {
+  scontrol show nodes \
+    | sed '/  OS=/d'  \
+    | awk '
+      BEGIN{
+        RS="NodeName="
+        black   = "black"
+        red     = "red"
+        green   = "green"
+        yellow  = "yellow"
+        blue    = "blue"
+        magenta = "magenta"
+        cyan    = "cyan"
+        white   = "white"
+        gray    = "gray"
+
+        GPU_AVAIL_COLOR = green
+        GPU_MIXED_COLOR = yellow
+        GPU_ALLOC_COLOR = red
+        GPU_DOWN_COLOR  = gray
+
+        colors[black]   = 0
+        colors[red]     = 1
+        colors[green]   = 2
+        colors[yellow]  = 3
+        colors[blue]    = 4
+        colors[magenta] = 5
+        colors[cyan]    = 6
+        colors[white]   = 7
+        colors[gray]    = 8
+
+        printf("%6s %6s %9s %9s %-25s\n","Node","GPU","capacity","allocated","Node_state")
+      }
+
+      function print_color(color,line) {
+        print "\033[38;05;"colors[color]"m"line"\033[0m"
+      }
+
+      function get_gpu_status(gpu_capacity,gpu_alloc,state) {
+        status = GPU_AVAIL_COLOR
+        if ( gpu_alloc > 0 )
+          status = GPU_MIXED_COLOR
+        if ( gpu_alloc == gpu_capacity  ) {
+          status = GPU_ALLOC_COLOR
+        }
+        _s = tolower(state)
+        if ( _s ~ /alloc/ ) {
+          status = GPU_ALLOC_COLOR
+        }
+        if ( _s ~ /down/ || _s ~ /not_respond/ || _s ~ /drain/ || _s ~ /offlin/ || _s ~ /maint/ ) {
+          status = GPU_DOWN_COLOR
+        }
+        return status
+      }
+
+      /^(c)?g/ {
+        name=$1
+        for (k=2;k<=NF;k++) {
+          ind = index($k,"=")
+          key = substr($k,0,ind-1)
+          val = substr($k,ind+1)
+          kv[key]=val
+        }
+        state_kv_pair = kv["State"]
+        Gres          = kv["Gres"]
+        CfgTRES       = kv["CfgTRES"]
+        AllocTRES     = kv["AllocTRES"]
+        N=split(state_kv_pair,tokens,"=")
+        state=tokens[N]
+        N=split(Gres,tokens,":")
+        gpu = tokens[2]
+        cap = tokens[3]
+        N=split(AllocTRES,tokens,":")
+        M=split(tokens[N],_tokens,"=")
+        alloc=_tokens[M]
+        gpu_str=sprintf("%6s %6s %9d %9d %-25s",name,gpu,cap,alloc,state)
+        status = get_gpu_status(cap,alloc,state)
+        print_color(status,gpu_str)
+      }
+    '
+}
+
+showgpus "$@"
+

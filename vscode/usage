@@ -1,0 +1,5 @@
+# this is not meant to be loaded as a module.
+# usage:
+#
+# /packages/apps/vscode/code <parameters>
+# or alternatively through a shell script that schedules a job

@@ -1,0 +1,11 @@
+#!/bin/sh
+#BLAME: Jason <yalim@asu.edu>
+
+line_number="${1:?ERROR -- line number must be passed}"
+file_name="${2}"
+
+if [[ -n "$file_name" ]]; then
+  sed -n "${line_number}{p;q}" "$file_name"
+else
+  sed -n "${line_number}{p;q}" < /dev/stdin
+fi

@@ -1,0 +1,10 @@
+#!/bin/bash
+#BLAME: Jason <yalim@asu.edu>
+
+if [[ -n $SLURM_JOB_ID ]]; then
+  scontrol show job $SLURM_JOB_ID \
+    | tr -s ' ' '\n'              \
+    | awk -F '=' '/NumCPUs/ {print $2}'
+else
+  echo 'This must be run during active job execution'
+fi

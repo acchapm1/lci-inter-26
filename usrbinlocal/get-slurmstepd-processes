@@ -1,0 +1,37 @@
+#!/bin/bash
+# BLAME: Jason <yalim@asu.edu>
+
+hostname=$(hostname -s)
+
+ps -ef \
+  | awk -v hostname=$hostname \
+  -F '[[:space:]]+|: \\[|\\.' '
+/ [s]lurmstepd/ {
+  jid=$(NF-1)
+  pid=$2 
+  ppid=$3 
+  a[jid]["count"]++ 
+  if ( a[jid]["count"]==1 ) { 
+    cmd = "scontrol show job " jid 
+    R = ""
+    while ( (cmd | getline result) > 0) 
+      R = sprintf("%s%s",R,result)
+    N = split(R,tokens," +")
+    for (k=1;k<=N;k++) { 
+      i       = index(tokens[k],"=") 
+      name    = substr(tokens[k],1,i-1)
+      val     = substr(tokens[k],i+1)
+      D[name] = val
+    }
+    a[jid]["JobState"] = D["JobState"] 
+    a[jid]["UserId"]   = D["UserId"]
+    a[jid]["EndTime"]  = D["EndTime"]
+    a[jid]["pid"]      = pid
+    a[jid]["ppid"]     = ppid
+  }
+} 
+END{
+  print "Hostname", "JobID", "PID", "JobID_count", "User", "JobState", "EndTime"
+  for (jid in a) 
+    print hostname, jid, a[jid]["pid"], a[jid]["count"], a[jid]["UserId"], a[jid]["JobState"], a[jid]["EndTime"] 
+}' | column -t

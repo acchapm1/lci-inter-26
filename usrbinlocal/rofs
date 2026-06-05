@@ -1,0 +1,98 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+usage() {
+  cat <<'EOF'
+Usage:
+  rofs build <directory>
+  rofs mount <file.sqsh>
+
+Examples:
+  rofs build ~/somedir
+  rofs mount somedir.sqsh
+EOF
+}
+
+die() {
+  echo "rofs: error: $*" >&2
+  exit 1
+}
+
+need_cmd() {
+  command -v "$1" >/dev/null 2>&1 || die "required command not found: $1"
+}
+
+strip_sqsh_ext() {
+  local name="$1"
+  name="${name%.sqsh}"
+  name="${name%.squashfs}"
+  printf '%s\n' "$name"
+}
+
+cmd_build() {
+  need_cmd mksquashfs
+
+  local src="${1:-}"
+  [[ -n "$src" ]] || die "missing directory argument"
+  [[ -d "$src" ]] || die "not a directory: $src"
+
+  # Remove trailing slashes so basename behaves cleanly.
+  src="${src%/}"
+
+  local stem
+  stem="$(basename "$src")"
+
+  local outfile
+  outfile="${PWD}/${stem}.sqsh"
+
+  [[ ! -e "$outfile" ]] || die "output already exists: $outfile"
+
+  mksquashfs "$src" "$outfile" -noappend 2>&1 | grep -E \
+  'Filesystem size|uncompressed filesystem size|Number of inodes|Number of files|Number of directories'
+}
+
+cmd_mount() {
+  need_cmd squashfuse
+
+  local image="${1:-}"
+  [[ -n "$image" ]] || die "missing squashfs file argument"
+  [[ -f "$image" ]] || die "not a file: $image"
+
+  local filename stem mountpoint
+  filename="$(basename "$image")"
+  stem="$(strip_sqsh_ext "$filename")"
+  mountpoint="/tmp/${stem}"
+
+  mkdir -p "$mountpoint"
+
+  if mountpoint -q "$mountpoint"; then
+    die "already mounted: $mountpoint"
+  fi
+
+  squashfuse "$image" "$mountpoint"
+
+  echo "mounting file at $mountpoint"
+}
+
+main() {
+  local verb="${1:-}"
+  shift || true
+
+  case "$verb" in
+    build)
+      cmd_build "$@"
+      ;;
+    mount)
+      cmd_mount "$@"
+      ;;
+    -h|--help|help|"")
+      usage
+      ;;
+    *)
+      usage >&2
+      die "unknown verb: $verb"
+      ;;
+  esac
+}
+
+main "$@"

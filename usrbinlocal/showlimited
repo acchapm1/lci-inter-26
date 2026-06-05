@@ -1,0 +1,39 @@
+#!/bin/bash
+
+showlimited() {
+  : << __HELPSTRING
+  # ===================================================================
+  # Show all jobs in cluster currently held up by GrpAssocCPULimit
+  # ===================================================================
+__HELPSTRING
+  echo ""
+  echo "Available CPU Capacity"
+  echo ""
+  echo "CPUs,NODES" | tr ',' '\t'
+  sinfo --noheader -e -o "%.25C %N" | sed 's/\// /g' | awk '{print $2,$NF}' | tr ' ' '\t'
+
+  echo ""
+  echo "CPU Counts Held due to Priority"
+  echo ""
+  echo "GROUP    ,CPUs,WALLTIMES" | tr ',' '\t'
+  squeue --noheader -t PD -O "GroupName,NumCPUs,TimeLimit,Reason" | grep Priority | awk '{sum[$1]+=$2; if (!seen[$1,$3]++) uniq[$1]=uniq[$1] (uniq[$1] == "" ? "" : ",") $3} END {for (i in sum) print i, sum[i], uniq[i]}' | sort | tr ' ' '\t' | cut -f1-3
+
+  echo ""
+  echo "CPU Counts Held due to ReqNodeNotAvail"
+  echo ""
+  echo "GROUP    ,CPUs,WALLTIMES" | tr ',' '\t'
+  squeue --noheader -t PD -O "GroupName,NumCPUs,TimeLimit,Reason" | grep ReqNodeNotAvail | awk '{sum[$1]+=$2; if (!seen[$1,$3]++) uniq[$1]=uniq[$1] (uniq[$1] == "" ? "" : ",") $3} END {for (i in sum) print i, sum[i], uniq[i]}' | sort | tr ' ' '\t' | cut -f1-3
+
+  echo ""
+  echo "CPU Counts Held due to QOSMaxCpuPerUserLimit"
+  echo ""
+  echo "GROUP    ,CPUs,WALLTIMES" | tr ',' '\t'
+  squeue --noheader -t PD -O "GroupName,NumCPUs,TimeLimit,Reason" | grep QOSMaxCpuPerUserLimit | awk '{sum[$1]+=$2; if (!seen[$1,$3]++) uniq[$1]=uniq[$1] (uniq[$1] == "" ? "" : ",") $3} END {for (i in sum) print i, sum[i], uniq[i]}' | sort | tr ' ' '\t' | cut -f1-3
+
+  echo ""
+  echo "GPU Jobs PENDING due to Priority"
+  echo ""
+  scontrol show job | grep -B30 TresPerJob=gres:gpu | grep -B3 "PENDING" | grep -oP '(?<=^JobId=)[^[:space:]]+'
+}
+
+showlimited "$@"

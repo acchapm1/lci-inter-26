@@ -1,0 +1,54 @@
+#!/bin/bash
+
+join_arr() {
+  : << __HELPSTRING
+  # ===================================================================
+  # Helper bash function to join arrays into a string by passed char.
+  # -------------------------------------------------------------------
+  # EXAMPLE USAGE:
+  # 
+  #   join_char , ${bash_array[@]}
+  # 
+  # ===================================================================
+__HELPSTRING
+  local join_char="${1}"
+  shift
+  echo $(IFS=${join_char}; echo "${*}")
+}
+
+sq() {
+  : << __HELPSTRING
+  # ===================================================================
+  # Bash function that automatically formats scheduler information for 
+  # including (and sorting by) job priorities.
+  # -------------------------------------------------------------------
+  # EXAMPLE USAGE:
+  # 
+  #   sq | less   
+  # 
+  # ===================================================================
+__HELPSTRING
+  local args="${@}"
+
+  local sq_fmt_arr=(
+    # NB: the . right justifies, but poorly. Instead, pipe to column.
+    jobid
+    username
+    partition
+    qos
+    statecompact
+    prioritylong
+    numcpus
+    timelimit
+    accruetime
+    starttime
+  # endtime:.21
+    reasonlist:32
+  )
+
+  local sq_fmt_str=$(join_arr , ${sq_fmt_arr[@]})
+
+  # -S "P,t,-p" sorts by priority (-p), state (t), and then partition (P)
+  squeue -S "P,t,-p" -O "${sq_fmt_str}" ${args[@]} | column -tR6,7,8,9,10,11
+}
+sq "${@}"

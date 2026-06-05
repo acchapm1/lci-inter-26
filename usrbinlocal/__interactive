@@ -1,0 +1,33 @@
+#!/bin/bash
+  
+readonly opts=(
+  -p general
+  -q public
+  -N 1-1
+  -c 1
+  -t 0-1
+  $@
+)
+
+temp_file=$(mktemp --tmpdir=/home/$USER/)
+cat > $temp_file << 'EOL'
+#!/bin/bash
+
+JOB=$SLURM_JOB_ID
+while true; do
+  sleep 1s
+  # Check job status
+  status=$(squeue -j $JOB -t PD,R -h -o %t)
+  if [ "$status" = "R" ];then
+    # Job is running, break the while loop
+    break
+  fi
+done
+
+# Determine the first node in the job:
+#readonly NODE=$(scontrol show job "$JOB" | grep -o 'BatchHost=[^ ]*' | cut -d'=' -f2)
+srun --pty bash -l
+EOL
+chmod +x  $temp_file
+echo "rm $temp_file" >> $temp_file
+salloc "${opts[@]}" $temp_file

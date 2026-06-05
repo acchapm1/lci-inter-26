@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+S="${1}"   # pass gpuMigType as first arg; default kept
+if [[ -z "$S" ]]; then
+  echo "Usage: $0 <gpuMigType string>" >&2
+  exit 1
+fi
+nvidia-smi -mig 1
+
+# per-GPU space-separated list (one token per GPU), otherwise single-string common case
+if [[ "$S" == *" "* ]]; then
+  read -a TOK <<< "$S"
+  for i in "${!TOK[@]}"; do
+    nvidia-smi mig -cgi "${TOK[$i]}" -i "$i" -C
+  done
+else
+  nvidia-smi mig -cgi "$S" -C
+fi

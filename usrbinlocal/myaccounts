@@ -1,0 +1,2 @@
+#!/bin/bash
+sacctmgr -s show user $USER format="User,Defaultaccount%16,Account%16,QOS%32" "$@"

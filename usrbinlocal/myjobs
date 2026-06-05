@@ -1,0 +1,102 @@
+#!/bin/bash
+ 
+# ===================================================================
+# Automatically format scheduler information for the user. 
+# ===================================================================
+
+# TODO: Fix tres-alloc issue when multiple gpu types are allocated
+
+readonly w=120
+readonly fmts=(
+  ArrayJobID:$w   #  1 -- matches jobID even if not Array
+  ArrayTaskID:$w  #  2 -- wide due to atrocious header length
+  PriorityLong:$w #  3
+  Partition:$w    #  4 
+  QOS:$w          #  5
+  Name:$w         #  6
+  State:$w        #  7
+  TimeUsed:$w     #  8
+  TimeLimit:$w    #  9
+  NumNodes:$w     # 10
+  NumCPUs:$w      # 11
+  tres-alloc:$w   # 12
+  ReasonList:$w   # 13
+)
+readonly fmt=$(printf "%s," "${fmts[@]}" | sed 's/,$//g')
+
+readonly opts=(
+  -O "$fmt"
+  --me
+  $@
+)
+
+# ==============================================================================
+# Our output queue fmt has a few objectives here:
+# 0. Be useful to the user for understanding their own job queue
+# 2. effectively reduce the "tres-alloc" column to obtain "GPU" info
+# 3. effectively merge and remove columns to improve readability:
+#    3.a. Merge  "Partition" and "QOS" 
+#    3.b. Merge  "ArrayTaskID" and "JobID" -> <base_job_id>_<array_task> 
+#         (when array job) else just <base_job_id>
+#    3.c. Merge  "NumNodes", "NumCPUs", and "tres-alloc" (as GPU info)   
+#
+# squeue will pipe into 
+#    awk, to do the heavy duty filtering, merging, and replacement,
+# which will pipe into 
+#    tr, to "squeeze" output field sep. |, removing ghosts of empty columns
+# which will pipe into 
+#    column, to nicely format the output fields into a table with some
+#            right-justification of columns
+# ------------------------------------------------------------------------------
+
+squeue "${opts[@]}" \
+  | awk -F '\\s\\s\\s+' -v OFS="|" '
+    NR == 1 {
+      $1  = "JobID"
+      $2  = ""
+      $3  = "PRIORITY"
+      $4  = "PARTITION/QOS"
+      $5  = ""
+      $10 = "Node/Core/GPU"
+      $11 = ""
+      $12 = ""
+      print $0
+    }
+    NR > 1 {
+      BaseJobID   = $1 
+      ArrayTaskID = $2 
+      Priority    = $3 
+      Partition   = $4 
+      QOS         = $5 
+      NumNodes    = $10
+      NumCPUs     = $11
+      tres_alloc  = $12
+      # Merge (Base)JobID and ArrayTaskID columns 
+      # and delete ArrayTaskID
+      if ( ArrayTaskID !~ /N\/A/ ) {
+        $1 = sprintf("%s_%s",BaseJobID,ArrayTaskID)
+      }
+      $2  = "" 
+      # Merge Partition and QOS columns
+      # and delete QOS column
+      $4  = sprintf("%s/%s",Partition,QOS)
+      $5  = ""
+      # Parse tres-alloc column for GPU info
+      gpu = "NA"
+      if ( tres_alloc ~ /gpu/ ) {
+        N   = split(tres_alloc,tres_tokens,"[,:]") 
+        gpu = tres_tokens[N]
+        sub("/","-",gpu)
+        sub("=",":",gpu)
+      }
+      # Then merge gpu info w/ NumNodes and NumCPUs
+      tres = sprintf("%s/%s/%s",NumNodes,NumCPUs,gpu)
+      $10  = tres
+      # Then delete NumCPUs and tres_alloc columns
+      $11  = ""
+      $12  = ""
+      print $0
+    }
+' \
+  | tr -s '|' \
+  | column -ts\| -R1,2,3,5,6,7

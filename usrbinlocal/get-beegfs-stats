@@ -1,0 +1,31 @@
+#!/bin/bash
+# BLAME: Jason <yalim@asu.edu>
+#  TODO: take option to reverse output
+#        (for now allow pipe to tac)
+
+beegfs-ctl --getquota --uid --all \
+  | awk -F '[ \\|]+'  '
+    BEGIN{
+      PROCINFO["sorted_in"]="@val_num_desc" 
+      L["KiB"]=1024
+      L["MiB"]=2^20
+      L["GiB"]=2^30
+      L["TiB"]=2^40 
+      print "user|uid|usage|hardlimit|inode_use|inode_limit"
+    } 
+    NR > 6 { 
+      username     = $2
+      usage_scalar = $4
+      usage_basis  = L[$5]
+      # e.g. 1.2 * 1024 for 1.2 KiB 
+      usage        = usage_scalar * usage_basis 
+      a[username]  = $0 
+      u[username]  = usage 
+    } 
+    END { 
+      for ( username in u ) 
+        print a[username] 
+    }
+' | sed 's/||/|/g' \
+  | column -ts\| -R1,2,3,4,5,6
+

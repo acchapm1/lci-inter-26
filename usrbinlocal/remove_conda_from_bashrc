@@ -1,0 +1,12 @@
+#!/bin/bash
+# Blame: Josh Burks <jeburks2@asu.edu> 2024-04-09
+# Purpose: Find and remove conda lines from your .bashrc
+if grep -q '# >>> conda initialize >>>' ~/.bashrc; then
+  echo "Removing conda lines from bashrc..."
+  sed -i '/# >>> conda initialize >>>/,/# <<< conda initialize <<</d' ~/.bashrc
+  echo "Done!"
+  echo "Now reload your shell with: source ~/.bashrc"
+else
+  echo "No conda lines found in your bashrc"
+fi
+

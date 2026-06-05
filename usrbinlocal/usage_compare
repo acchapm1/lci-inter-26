@@ -1,0 +1,145 @@
+####
+# Assorted charts of slurm usage
+# BLAME William Dizon <yolo.asu.edu>
+####
+
+EMPTY=⬛
+FILLED=⬜
+LINEBREAK=10
+
+function pct {
+  # accepts 2 arguments, numerator, denominator
+  # returns float
+  awk "BEGIN{print(($1/$2)*100)}"
+}
+
+function SHOW_ORDERING {
+  # accepts 4 arguments, numerator, denominator, lefthand label, righthand label
+  # prints boxes, FLOOR(num/den)
+  TRUNCATED=$( echo "$1 / 1" | bc )
+  printf "${3:-''} "
+  for n in $(seq 1 $2); do
+    if [[ $n -eq $TRUNCATED ]]; then
+      printf $FILLED
+    else
+      printf $EMPTY
+    fi
+  done
+  printf " ${4:-''}"
+  echo ""
+}
+
+function SHOW_PCT {
+  # accepts 2 arguments, numerator, denominator
+  # prints boxes, FLOOR(num/den)
+  PCT=$(pct $1 $2)
+  TRUNCATED=$( echo "$PCT / 1" | bc )
+  for n in $(seq 1 100); do
+    if [[ $n -le $TRUNCATED ]]; then
+      printf $FILLED
+    else
+      printf $EMPTY
+    fi
+    REMAINDER=$((n%LINEBREAK))
+    if [[ $REMAINDER -eq "0" ]]; then
+      echo ""
+    fi
+  done
+  echo ""
+}
+
+function PRINT_PCT {
+  # accepts 2 arguments, numerator, denominator
+  # prints boxes, FLOOR(num/den)
+  PCT=$(pct $1 $2)
+  TRUNCATED=$( echo "$PCT / 1" | bc )
+  for n in $(seq 1 100); do
+    if [[ $n -le $TRUNCATED ]]; then
+      printf $FILLED
+    else
+      REM=$((($LINEBREAK-(n%LINEBREAK)) + 1))
+      if [ $REM -gt $LINEBREAK ]; then REM=$(echo "$REM-$LINEBREAK" | bc); fi
+      if [ $REM -eq $LINEBREAK ]; then break; fi
+      for n in $(seq 1 $REM); do
+        printf $EMPTY
+      done
+      break
+    fi
+    REMAINDER=$((n%$LINEBREAK))
+    if [[ $REMAINDER -eq "0" ]]; then
+      echo ""
+      printf "%15s" ""
+    fi
+  done
+  echo ""
+}
+
+##################################
+## calculations
+
+ME=${1:-$USER}
+MYGROUP=$(id -gn $ME)
+
+if [ -z $ME ]; then
+  echo "There is no jobdata for user $ME"
+  exit 1
+elif [ -z $MYGROUP ]; then
+  echo "There is no jobdata for group $MYGROUP"
+  exit 1
+fi
+
+TMP_FILE_A=$(mktemp /tmp/tmp.XXXXX)
+TMP_FILE_B=$(mktemp /tmp/tmp.XXXXX)
+sshare -aU | tail -n+4 | sort -rk6 > $TMP_FILE_A
+RANK_A=$(grep -n $ME $TMP_FILE_A | cut -d ":" -f1)
+USER_COUNT=$(wc -l $TMP_FILE_A | cut -d " " -f1)
+
+sort -k7 $TMP_FILE_A | grep $MYGROUP > $TMP_FILE_B
+RANK_B=$(grep -n $ME $TMP_FILE_B | cut -d ":" -f1)
+GRP_COUNT=$(wc -l $TMP_FILE_B | cut -d " " -f1)
+CPU_USED=$(sshare -u $ME -UP | cut -d "|" -f 5 | tail -n+2)
+CPU_GRP_USED=$(cat $TMP_FILE_B | tr -s " " | sort -rk6 | cut -d " " -f 5 | paste -sd+ | bc)
+CPU_ALL_USED=$(cat $TMP_FILE_A | tr -s " " | sort -rk6 | cut -d " " -f 5 | paste -sd+ | bc)
+
+TMP_FILE_C=$(mktemp /tmp/tmp.XXXXX)
+sshare -aP | grep parent | grep grp_ | awk -F\| '{print $1 "," $5}' > $TMP_FILE_C
+
+##################################
+
+echo "User: $1"
+echo "Group: $MYGROUP" 
+echo ""
+
+echo "Among primary group, user is ordered #$RANK_B of $GRP_COUNT in core-hour allocation"
+echo ""
+SHOW_ORDERING $RANK_B $GRP_COUNT "First" "Last"
+echo ""
+
+#echo "sort by most productive"
+cat $TMP_FILE_B | tr -s " " | sort -rk6 | cut -d " " -f 2 | paste -s -d " " | sed "s/ /, /g"
+
+echo ""
+echo ""
+echo "Usage as a percentage of user's immediate group: $MYGROUP - $(pct $CPU_USED $CPU_GRP_USED)%"
+SHOW_PCT $CPU_USED $CPU_GRP_USED
+echo ""
+
+echo "Among all users on sol, user ordered #$RANK_A of $USER_COUNT in core-hour allocation"
+SHOW_ORDERING $RANK_A $USER_COUNT "First" "Last"
+echo ""
+echo "Usage as a percentage of all sol users"
+SHOW_PCT $CPU_USED $CPU_ALL_USED
+
+echo ""
+echo "User group's aggregated usage as a percentage of all sol users"
+SHOW_PCT $CPU_GRP_USED $CPU_ALL_USED
+
+echo ""
+echo "Usage on Sol by Group"
+while read a; do
+  GG=$(echo $a | cut -d "," -f 1)
+  N=$(echo $a | cut -d "," -f 2)
+  printf "%15s" $GG
+  PRINT_PCT $N $CPU_ALL_USED
+done < $TMP_FILE_C
+

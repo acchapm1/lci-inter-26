@@ -1,0 +1,236 @@
+#!/usr/bin/env python
+
+import re
+SBATCH_REGEX_PARSED=re.compile('^#(#)?SBATCH --?(\w+)[ =]([\w\-\:]+) *(#.*)*$')
+SHEBANG_REGEX=re.compile('^(#!/.*)')
+SBATCH_TESTONLY_REGEX=re.compile('sbatch: Job (\d+) to start at ([^ ]+) using (\d+) processors on nodes ([\,\-\w+\[\]]+) in partition (\w+)')
+SBATCH_PARAMS_REGEX=re.compile('sbatch: ([^\:]+): (\S.*)')
+
+from collections import namedtuple
+UnicodeHit = namedtuple('UnicodeHit', ['linenum', 'line', 'pos'])
+
+def parse_slurm_conf():
+    SLURM_CONF='/etc/slurm/slurm.conf'
+    PARTITION_STANZA_START=re.compile('^PartitionName=')
+    PARTITION_STANZA_END=re.compile('.*(?<![\\\\ ])$')
+    ATTR_BREAK=re.compile('^([a-zA-Z]+)=([^ ]+)')                         
+    DEFAULTS = {}
+
+    with open(SLURM_CONF, 'r') as fp:
+        line = fp.readline()
+        while line:
+            capture_on = PARTITION_STANZA_START.match(line)
+            if capture_on:
+                attributes = ATTR_BREAK.match(line.strip())
+                partition = attributes.group(2).strip()
+                DEFAULTS[partition] = {}
+                while capture_on:
+                    attributes = ATTR_BREAK.match(line.strip())
+                    #inner loop executes until end of stanza
+                    try:
+                        if attributes.group(2).isdigit():
+                            DEFAULTS[partition][attributes.group(1)] = int(attributes.group(2))
+                        else:
+                            DEFAULTS[partition][attributes.group(1)] = attributes.group(2)
+                    except AttributeError:
+                        pass
+                    #newly formatted slurm.conf makes end-of-stanza different
+                    #if PARTITION_STANZA_END.match(line): break
+                    if not len(line.strip()):
+                        break
+                    line = fp.readline()
+            line = fp.readline()
+        return DEFAULTS
+
+def detect_unicode(fp):
+    hits = []
+    lineno = 0
+
+    with open(fp, 'r') as thefile:
+        line = thefile.readline()
+        while line:
+            try:
+                line.decode('ascii')
+            except UnicodeDecodeError:
+                for count, c in enumerate(line):
+                    if ord(c) >= 128:
+                        break
+                hits.append(UnicodeHit(lineno, line, count))
+            except AttributeError:
+                pass
+            lineno = lineno + 1
+            line = thefile.readline()
+    return hits
+
+def parse_sbatch(input_fn):
+    constructed_sbatch = {}
+    ignored_sbatch = {}
+
+    with open(input_fn, 'r') as fp:
+        linecount = 0
+        line = fp.readline()
+        shebang = SHEBANG_REGEX.match(line)
+    
+        while line:
+            match = SBATCH_REGEX_PARSED.match(line)
+            if match:
+                if match.group(1) == '#':
+                    ignored_sbatch[match.group(2)] = {}
+                    if match.group(3).strip().isdigit():
+                        ignored_sbatch[match.group(2)]['value'] = int(match.group(3).strip())
+                    else:
+                        ignored_sbatch[match.group(2)]['value'] = match.group(3).strip()
+                else:
+                    constructed_sbatch[match.group(2)] = {}
+                    if match.group(3).strip().isdigit():
+                        constructed_sbatch[match.group(2)]['value'] = int(match.group(3).strip())
+                    else:
+                        constructed_sbatch[match.group(2)]['value'] = match.group(3).strip()
+            line = fp.readline()
+            linecount = linecount + 1
+    return constructed_sbatch, ignored_sbatch, shebang
+
+
+if __name__ == "__main__":
+    import sys
+    
+    try:
+    	input_fn = sys.argv[1]
+    except IndexError:
+        print("Please provide a filename for an SBATCH file to test")
+        print("Syntax: stest myscriptname.sh")
+        exit(1)
+    
+    ####################
+    # Print summary
+    ####################
+    DEFAULTS = parse_slurm_conf()
+    addl_errors = []
+
+    try:
+        constructed_sbatch, ignored_sbatch, shebang = parse_sbatch(input_fn)
+    except IOError:
+        print("Provided argument `{}` is not a valid filename.".format(input_fn))
+        exit(1)
+    implied_sbatch = {}
+
+    print("-"*65)
+    print("Checking sbatch has shebang (#!) line at top...".format(input_fn))
+    print("-"*65)
+    try:
+        print("Shebang found: {}".format(shebang.group(1)))
+    except AttributeError:
+        print("No shebang found; Slurm will not know how to execute this file if submitted.")
+        print("A shebang is the top line of a file indicating the interpreter SBATCH will use")
+        print("The most commonly used interpreter is bash, with a shebang '#!/bin/bash'")
+    print('')
+    
+    print("-"*65)
+    print("Checking {} for non-ascii characters slurm cannot handle...".format(input_fn))
+    print("-"*65)
+    errors = detect_unicode(input_fn)
+    if len(errors):
+        print("Found {} errors:".format(len(errors)))
+        for i in errors:
+            prefix = "line {}: ".format(i[0])
+            print("{}{}".format(prefix,i[1].strip()))
+            print("{}^".format(' '*(len(prefix)+i[2])))
+            print('')
+    else:
+        print("No errors found")
+        print('')
+
+    if ignored_sbatch:
+        print("-"*65)
+        print("These arguments were present, but commented out and therefore inactive")
+        print("-"*65)
+        for k,v in ignored_sbatch.items():
+            print("Ignored parameter '{}': {}".format(k, v['value']))
+        print('')
+    
+    print("-"*65)
+    print("Resource usage according to fully parsed SBATCH file:")
+    print("-"*65)
+
+    import subprocess
+
+    testonly_output = None
+    partition = None
+    params = {}
+    try:
+        testonly_output = subprocess.check_output(["sbatch", "-vv", "--test-only", input_fn], stderr=subprocess.STDOUT)
+    except subprocess.CalledProcessError as e:
+        print(e)
+        print("Provided file does not appear to be a valid sbatch script")
+        print("Dumping command output:")
+        print()
+        testonly_output = str(e.output)
+        for line in str(testonly_output).split('\\n'):
+            print(str(line))
+        exit(1)
+    else:
+        stringified = str(testonly_output)
+        for line in stringified.split('\\n'):
+            testonly_match = SBATCH_TESTONLY_REGEX.match(line)
+            testparams_match = SBATCH_PARAMS_REGEX.match(line)
+
+            if testparams_match:
+                arg = testparams_match.group(1).strip()
+                try:
+                    params[arg] = int(testparams_match.group(2).strip())
+                except ValueError:
+                    params[arg] = testparams_match.group(2).strip()
+                continue
+
+            elif testonly_match:
+                partition = testonly_match.group(5)
+                cores = int(testonly_match.group(3))
+                nodes = testonly_match.group(4)
+                print("Partition : {}".format(partition))
+                print("Cores     : {}".format(cores))
+                print("GPUs      : {}".format(params.get('gres', '0')))
+                #print("Nodes     : {}".format(nodes))
+
+                try:
+                    memory = cores * DEFAULTS[partition]['DefMemPerCPU']
+                    print("Memory    : {}".format(memory))
+                except KeyError:
+                    addl_errors.append("Ensure you are requesting a specific amount of memory; Sol does not allocate 4.5GB per core as Agave does.")
+                    implied_sbatch['m'] = DEFAULTS['DEFAULT'].get('DefMemPerCPU', 0)
+                    memory = cores * DEFAULTS['DEFAULT']['DefMemPerCPU']
+                    addl_errors.append("Unspecified memory will default to {}GB per core".format(cores * DEFAULTS['DEFAULT']['DefMemPerCPU']))
+                    print("Memory    : {}".format(memory))
+                
+                try:
+                    print("Walltime  : {} (Max: {})".format(constructed_sbatch['t']['value'], DEFAULTS[partition].get('MaxTime', "?")))
+                except KeyError:
+                    implied_sbatch['t'] = DEFAULTS[partition].get('DefaultTime', DEFAULTS['DEFAULT'].get('DefaultTime', 0))
+                    addl_errors.append("You have not specified a walltime.")
+            
+                try:
+                    print("QOS       : {}".format(constructed_sbatch['q']['value']))
+                    if constructed_sbatch['q']['value'] not in DEFAULTS[partition].get('AllowQOS', []):
+                        addl_errors.append("The '{}' QOS you have specified is not valid for the '{}' partition!".format(constructed_sbatch['q']['value'], partition))
+                except KeyError:
+                    addl_errors.append("You have not specified a QOS; you should specify 'public' or 'private'; assuming 'public' for now.")
+                    implied_sbatch['q'] = 'public'
+                    if implied_sbatch['q'] not in DEFAULTS[partition].get('AllowQOS', '').split(','):
+                        addl_errors.append("The '{}' qos is not compatible with the {} partition!".format(implied_sbatch['q'], partition))
+                print("")
+                break
+
+    print("-"*65)
+    print("Final Checklist")
+    print("-"*65)
+
+    if addl_errors:
+        for i in addl_errors:
+            print(i)
+    else:
+        print("Things seem ready for submission")
+        if (testonly_match):
+            print("Slurm reports this job may be able to schedule in as soon as: {}".format(testonly_match.group(2)))
+        #print(testonly_match.group(0))
+
+print('')
+exit(len(addl_errors))

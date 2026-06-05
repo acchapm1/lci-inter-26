@@ -1,0 +1,37 @@
+#!/bin/bash
+
+usage() {
+    echo "Usage: $0 <JOBID>"
+    echo "   or ensure the SLURM_JOB_ID environment variable is set."
+    echo
+    echo "Description:"
+    echo "  This script retrieves job information based on the provided JOBID or the SLURM_JOB_ID environment variable."
+    echo "  If a epilog file exists for the job, it will be displayed."
+    echo "  If no epilog file exists, job information is fetched via 'thisjob'."
+    echo
+    exit 1
+}
+
+JOBID=${1:-$SLURM_JOB_ID}
+[[ -z $JOBID ]] && usage
+
+# If run as root, parse the home directory
+if [[ $EUID -eq 0 ]]; then
+    JOBUSER=$(sacct -j "$JOBID" -o user --noheader --parsable2 | awk '{print $1}'| xargs)
+    JOBHOME=$(getent passwd "$JOBUSER" | cut -d: -f6)
+else
+    JOBHOME="$HOME"
+fi
+
+EPILOGFILE="$JOBHOME/.local/var/log/slurm/slurm_record_$JOBID"
+
+# Check if the logfile exists
+if [[ -f "$EPILOGFILE" ]]; then
+    echo -e "Showing contents of: $EPILOGFILE \n"
+    cat "$EPILOGFILE"
+    echo -e "\n\n--- end epilog ---\n"
+    seff $JOBID
+    exit 0
+else
+    /usr/local/bin/thisjob "$JOBID"
+fi

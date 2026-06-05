@@ -1,0 +1,34 @@
+#!/bin/bash
+
+ASURITE="${1:-WILLNOTCANNOTMATCH}"
+TMPFILE_JOBS="$(mktemp)"
+TMPFILE_PIDS="$(mktemp)"
+
+echo "Jobs stuck in COMPLET[ED|ING]:"
+ps -aux | grep -oP "slurmstepd: \[([0-9]+)" | \
+   cut -d[ -f2 | \
+   xargs -I {} sh -c "scontrol show job {} | \
+   grep -B4 JobState=COMPLET" | \
+   grep -B3 "$ASURITE" | \
+   grep -oP '(?<=^JobId=)[^[:space:]]+' | \
+   tee $TMPFILE_JOBS
+
+sort -u -o $TMPFILE_JOBS $TMPFILE_JOBS
+
+echo ""
+echo "PIDs on node matching [batch|extern]:"
+
+while read line; do
+  ps -ef | awk '/slurmstepd.*\['$line'\.batch\]/{print $2}' >> $TMPFILE_PIDS
+  ps -ef | awk '/slurmstepd.*\['$line'\.extern\]/{print $2}' >> $TMPFILE_PIDS
+  ps -ef | awk '/slurmstepd.*\['$line'\.batch\]/{print $0}'
+  ps -ef | awk '/slurmstepd.*\['$line'\.extern\]/{print $0}'
+done < $TMPFILE_JOBS
+
+sort -u -o $TMPFILE_PIDS $TMPFILE_PIDS
+
+echo ""
+echo "EXECUTING actions: (yes, really!)"
+xargs -I {} -a $TMPFILE_PIDS echo "# kill -9 {}"
+xargs -a $TMPFILE_PIDS kill -9
+

@@ -1,0 +1,56 @@
+#!/bin/bash
+join_arr() {
+  : << __HELPSTRING
+  # ===================================================================
+  # Helper bash function to join arrays into a string by passed char.
+  # -------------------------------------------------------------------
+  # EXAMPLE USAGE:
+  # 
+  #   join_char , ${bash_array[@]}
+  # 
+  # ===================================================================
+__HELPSTRING
+  local join_char="${1}"
+  shift
+  echo $(IFS=${join_char}; echo "${*}")
+}
+
+
+mysacct() {
+  : << __HELPSTRING
+  # ===================================================================
+  # Bash function that displays job execution information by
+  # automatically formatting Scheduler tool sacct output.
+  #
+  # N.B. that the default time window is 24 hours ago which may be 
+  # changed with the flag,
+  #
+  #      --starttime=YYYY-mm-ddTHH:MM:SS
+  #
+  # For instance, June 9th, 2022 at 2:34 PM may be passed as:
+  #
+  #      --starttime=2022-06-09T14:34
+  #
+  # ===================================================================
+__HELPSTRING
+  local sacct_fmt_opts=(
+    jobid%15
+    timelimit
+    end
+    elapsed
+    maxrss
+    totalcpu
+    cputime
+    allocTRES%42
+    state 
+  )
+  local sacct_fmt_str=$(join_arr , "${sacct_fmt_opts[@]}")
+  local opts=(
+   --user=$USER 
+   --format="${sacct_fmt_str}"
+   "${@}"
+  )
+  sacct "${opts[@]}"
+}
+
+mysacct "${@}"

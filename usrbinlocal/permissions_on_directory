@@ -1,0 +1,413 @@
+#!/usr/bin/env python3
+
+import argparse
+import grp
+import os
+import pwd
+import stat
+from pathlib import Path
+
+
+# ---- current process identity ----
+
+def get_identity():
+    euid = os.geteuid()
+    egid = os.getegid()
+    try:
+        username = pwd.getpwuid(euid).pw_name
+        all_gids = frozenset(os.getgrouplist(username, egid))
+    except (KeyError, AttributeError):
+        all_gids = frozenset(os.getgroups()) | {egid}
+    return euid, egid, all_gids
+
+
+EUID, EGID, REAL_GIDS = get_identity()
+
+
+# ---- lstat cache ----
+
+_stat_cache = {}
+
+def lstat_safe(path):
+    key = str(path)
+    if key not in _stat_cache:
+        try:
+            _stat_cache[key] = path.lstat()
+        except OSError:
+            _stat_cache[key] = None
+    return _stat_cache[key]
+
+
+# ---- permission evaluation (gid_set is explicit, no globals) ----
+
+def applicable_bits(st, gid_set):
+    """
+    Return (bits, tier) for the given stat result and group set.
+    Root bypasses DAC for read/write; execute still requires a bit.
+    """
+    if EUID == 0:
+        return st.st_mode, "root"
+    if st.st_uid == EUID:
+        return (st.st_mode >> 6) & 0o7, "owner"
+    if st.st_gid in gid_set:
+        return (st.st_mode >> 3) & 0o7, "group"
+    return st.st_mode & 0o7, "other"
+
+
+def can_exec(path, gid_set):
+    if EUID == 0:
+        return True
+    s = lstat_safe(path)
+    if s is None:
+        return False
+    bits, _ = applicable_bits(s, gid_set)
+    return bool(bits & 0o1)
+
+
+def can_read(path, gid_set):
+    if EUID == 0:
+        return True
+    s = lstat_safe(path)
+    if s is None:
+        return False
+    bits, _ = applicable_bits(s, gid_set)
+    return bool(bits & 0o4)
+
+
+def can_write(path, gid_set):
+    if EUID == 0:
+        return True
+    s = lstat_safe(path)
+    if s is None:
+        return False
+    bits, _ = applicable_bits(s, gid_set)
+    return bool(bits & 0o2)
+
+
+# ---- stat formatting helpers ----
+
+def filemode_str(path):
+    s = lstat_safe(path)
+    return stat.filemode(s.st_mode) if s else "??????????"
+
+
+def octal_str(path):
+    s = lstat_safe(path)
+    return format(s.st_mode & 0o7777, "04o") if s else "0000"
+
+
+def owner_name(path):
+    s = lstat_safe(path)
+    if not s:
+        return "unknown"
+    try:
+        return pwd.getpwuid(s.st_uid).pw_name
+    except KeyError:
+        return str(s.st_uid)
+
+
+def group_name_of(path):
+    s = lstat_safe(path)
+    if not s:
+        return "unknown"
+    try:
+        return grp.getgrgid(s.st_gid).gr_name
+    except KeyError:
+        return str(s.st_gid)
+
+
+def gid_label(gid):
+    try:
+        return grp.getgrgid(gid).gr_name
+    except KeyError:
+        return str(gid)
+
+
+def uid_label(uid):
+    try:
+        return pwd.getpwuid(uid).pw_name
+    except KeyError:
+        return str(uid)
+
+
+# ---- chmod suggestion ----
+
+def suggest_chmod(path, gid_set, need_read=False, need_write=False,
+                  need_exec=False, force_tier=None):
+    s = lstat_safe(path)
+    if s is None:
+        return None, None
+
+    mode = s.st_mode & 0o7777
+    _, tier = applicable_bits(s, gid_set)
+    if force_tier is not None:
+        tier = force_tier
+
+    if tier == "root":
+        return None, None
+
+    want = (
+        ("r" if need_read  else "") +
+        ("w" if need_write else "") +
+        ("x" if need_exec  else "")
+    )
+    if not want:
+        return None, None
+
+    tier_char  = {"owner": "u", "group": "g", "other": "o"}[tier]
+    slot_index = {"owner": 0,   "group": 1,   "other": 2  }[tier]
+
+    add = (
+        (0o4 if need_read  else 0) |
+        (0o2 if need_write else 0) |
+        (0o1 if need_exec  else 0)
+    )
+    special = mode & 0o7000
+    slots = [(mode >> 6) & 0o7, (mode >> 3) & 0o7, mode & 0o7]
+    slots[slot_index] |= add
+    new_mode = format(special | (slots[0] << 6) | (slots[1] << 3) | slots[2], "04o")
+
+    return f"chmod {tier_char}+{want}", new_mode
+
+
+# ---- path component builder ----
+
+def path_components(path):
+    try:
+        path = path.resolve()
+    except OSError:
+        pass
+    parts = [Path("/")]
+    for part in path.parts[1:]:
+        parts.append(parts[-1] / part)
+    return parts
+
+
+# ---- analysis ----
+
+def analyze_read(target, gid_set):
+    missing_traverse = []
+    missing_read = []
+    unreadable_files = []
+
+    for comp in path_components(target):
+        if not can_exec(comp, gid_set):
+            missing_traverse.append(comp)
+
+    if not can_read(target, gid_set):
+        missing_read.append(target)
+
+    if target.is_dir():
+        try:
+            for child in sorted(target.iterdir()):
+                if child.is_file() and not can_read(child, gid_set):
+                    unreadable_files.append(child)
+        except PermissionError:
+            pass
+
+    return missing_traverse, missing_read, unreadable_files
+
+
+def analyze_move(target, dest, gid_set):
+    need_src = []
+    need_dest = []
+
+    for comp in path_components(target):
+        if not can_exec(comp, gid_set):
+            need_src.append(comp)
+
+    parent = target.parent
+    if not can_write(parent, gid_set) or not can_exec(parent, gid_set):
+        need_src.append(parent)
+
+    if dest is not None:
+        if not dest.exists() or not dest.is_dir():
+            raise ValueError(
+                f"Destination must exist and be a directory: {dest}"
+            )
+        for comp in path_components(dest):
+            if not can_exec(comp, gid_set):
+                need_dest.append(comp)
+
+        if not can_write(dest, gid_set) or not can_exec(dest, gid_set):
+            need_dest.append(dest)
+
+    need_src  = list(dict.fromkeys(str(p) for p in need_src))
+    need_dest = list(dict.fromkeys(str(p) for p in need_dest))
+    return need_src, need_dest
+
+
+# ---- output ----
+
+def print_path_issue(p_str, gid_set, need_r=False, need_w=False,
+                     need_x=False, force_tier=None):
+    p = Path(p_str)
+    s = lstat_safe(p)
+    tier = applicable_bits(s, gid_set)[1] if s else "unknown"
+    display_tier = force_tier if force_tier else tier
+    sym, numeric = suggest_chmod(p, gid_set, need_r, need_w, need_x,
+                                 force_tier=force_tier)
+
+    print(f"  {p_str}")
+    print(f"    owner   : {owner_name(p)}  group: {group_name_of(p)}")
+    print(f"    current : {filemode_str(p)}  ({octal_str(p)})"
+          f"  [applies as: {display_tier}]")
+    if sym:
+        print(f"    fix     : {sym} {p_str}")
+        print(f"            : chmod {numeric} {p_str}")
+    else:
+        print(f"    fix     : (no simple chmod; check ACLs or ownership)")
+
+
+def print_traverse_issues(paths, gid_set, force_tier=None):
+    if not paths:
+        return
+    print("  Traverse (execute) missing:")
+    seen = set()
+    for p_str in paths:
+        if p_str in seen:
+            continue
+        seen.add(p_str)
+        print_path_issue(p_str, gid_set, need_x=True, force_tier=force_tier)
+
+
+def print_read_issues(paths, gid_set, force_tier=None):
+    if not paths:
+        return
+    print("  Read missing:")
+    for p_str in paths:
+        print_path_issue(p_str, gid_set, need_r=True, force_tier=force_tier)
+
+
+def print_write_exec_issues(paths, gid_set, force_tier=None):
+    if not paths:
+        return
+    print("  Write+execute missing on parent:")
+    for p_str in paths:
+        p = Path(p_str)
+        need_w = not can_write(p, gid_set)
+        need_x = not can_exec(p, gid_set)
+        print_path_issue(p_str, gid_set, need_w=need_w, need_x=need_x,
+                         force_tier=force_tier)
+
+
+def run_analysis(target, dest, gid_set, label, force_tier=None):
+    dest_resolved = None
+    if dest:
+        try:
+            dest_resolved = dest.resolve()
+        except OSError:
+            dest_resolved = dest
+
+    print(f"\n{'=' * 60}")
+    print(f"  Scenario: {label}")
+    print(f"{'=' * 60}")
+
+    # READ
+    missing_trav, missing_read, unreadable = analyze_read(target, gid_set)
+    print("\n--- READ ---")
+    if not missing_trav and not missing_read and not unreadable:
+        print("  All good.")
+    else:
+        print_traverse_issues(
+            [str(p) for p in missing_trav], gid_set, force_tier=force_tier
+        )
+        print_read_issues(
+            [str(p) for p in missing_read], gid_set, force_tier=force_tier
+        )
+        if unreadable:
+            print("  Unreadable files inside directory:")
+            for f in unreadable:
+                print_path_issue(str(f), gid_set, need_r=True,
+                                 force_tier=force_tier)
+
+    # MOVE
+    print("\n--- MOVE ---")
+    try:
+        need_src, need_dest = analyze_move(target, dest, gid_set)
+        if not need_src and not need_dest:
+            print("  All good.")
+        else:
+            if need_src:
+                print("  Source side:")
+                parent_str = str(target.parent)
+                traverse = [p for p in need_src if p != parent_str]
+                parent   = [p for p in need_src if p == parent_str]
+                print_traverse_issues(traverse, gid_set, force_tier=force_tier)
+                print_write_exec_issues(parent, gid_set, force_tier=force_tier)
+            if need_dest:
+                print("  Destination side:")
+                dest_str = str(dest_resolved) if dest_resolved else ""
+                traverse = [p for p in need_dest if p != dest_str]
+                dest_dir = [p for p in need_dest if p == dest_str]
+                print_traverse_issues(traverse, gid_set, force_tier=force_tier)
+                print_write_exec_issues(dest_dir, gid_set,
+                                        force_tier=force_tier)
+    except ValueError as e:
+        print(f"  Error: {e}")
+
+
+# ---- entry point ----
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="Diagnose permission issues for the current user on a "
+                    "target path. Always shows both current-identity and "
+                    "simulated-group-member scenarios."
+    )
+    parser.add_argument("target", type=Path,
+                        help="File or directory to inspect")
+    parser.add_argument("dest", type=Path, nargs="?",
+                        help="Destination directory (move analysis)")
+    args = parser.parse_args()
+
+    target = args.target
+    if not target.exists():
+        parser.error(f"Target does not exist: {target}")
+
+    try:
+        target = target.resolve()
+    except OSError:
+        pass
+
+    # Resolve the target's owning group for simulation
+    target_stat = lstat_safe(target)
+    if target_stat is None:
+        parser.error(f"Cannot stat target: {target}")
+
+    target_gid   = target_stat.st_gid
+    target_gname = gid_label(target_gid)
+    uname        = uid_label(EUID)
+
+    # Build simulated GID set (real + target group)
+    simulated_gids = REAL_GIDS | {target_gid}
+    already_member = target_gid in REAL_GIDS
+
+    # Header
+    real_gnames = ", ".join(gid_label(g) for g in sorted(REAL_GIDS))
+    print(f"\nRunning as : {uname} (uid={EUID})")
+    print(f"Groups     : {real_gnames}")
+    print(f"\nTarget     : {target}")
+    print(f"Owner      : {owner_name(target)}  group: {target_gname}")
+    print(f"Perms      : {filemode_str(target)}  (octal: {octal_str(target)})")
+
+    if already_member:
+        print(f"\n[note] User is already a member of '{target_gname}' "
+              f"-- both scenarios will be identical.")
+
+    # Scenario 1: real identity, no forced tier
+    run_analysis(
+        target, args.dest, REAL_GIDS,
+        label="Your user as-is"
+    )
+
+    # Scenario 2: simulated group membership, suggestions forced to group tier
+    sim_gnames = ", ".join(gid_label(g) for g in sorted(simulated_gids))
+    run_analysis(
+        target, args.dest, simulated_gids,
+        label=f"Where you are added to {target_gname} via: 'usermod -aG {target_gname} {uname}'",
+        force_tier="group"
+    )
+
+if __name__ == "__main__":
+    main()

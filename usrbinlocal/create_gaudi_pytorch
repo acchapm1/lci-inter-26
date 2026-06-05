@@ -1,0 +1,63 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+usage() {
+  cat <<'EOF'
+Usage:
+  setup_gaudi_env.sh <env_name>
+
+Example:
+  setup_gaudi_env.sh pytorch-2.9.0-gaudi
+EOF
+}
+
+die() {
+  echo "Error: $*" >&2
+  exit 1
+}
+
+readonly ARCHIVE_URL="https://vault.habana.ai/artifactory/gaudi-pt-modules/1.23.0/695/pytorch/rhel96/pytorch_modules-v2.9.0_1.23.0_695.tgz"
+readonly ARCHIVE_NAME="${ARCHIVE_URL##*/}"
+readonly EXTRA_INDEX_URL="https://vault.habana.ai/artifactory/api/pypi/gaudi-python/simple"
+readonly PYTHON_VERSION="3.12"
+readonly SETUPTOOLS_VERSION="79"
+
+[[ $# -eq 1 ]] || { usage; exit 1; }
+
+readonly ENV_NAME="$1"
+readonly WORKDIR="$(mktemp -d -t gaudi-tmp.XXXXXX)"
+
+cleanup() {
+  rm -rf "$WORKDIR"
+}
+trap cleanup EXIT
+
+ml mamba
+conda create -y -n $ENV_NAME python=3.12 setuptools=79
+source activate $ENV_NAME
+
+echo "Using work directory: $WORKDIR"
+echo "Downloading archive..."
+wget -O "$WORKDIR/$ARCHIVE_NAME" "$ARCHIVE_URL"
+
+echo "Extracting archive..."
+tar -xf "$WORKDIR/$ARCHIVE_NAME" -C "$WORKDIR"
+
+cd "$WORKDIR"
+
+echo "Installing Habana helper package..."
+python -m pip install habana-pyhlml --extra-index-url "$EXTRA_INDEX_URL"
+
+echo "Installing wheel files..."
+shopt -s nullglob
+wheels=( *.whl )
+(( ${#wheels[@]} > 0 )) || die "No wheel files found in $WORKDIR"
+python -m pip install "${wheels[@]}"
+
+echo "Installing requirements..."
+[[ -f requirements-pytorch.txt ]] || die "requirements-pytorch.txt not found in $WORKDIR"
+python -m pip install -r requirements-pytorch.txt
+
+python -m pip install transformers
+
+echo "Done. Environment '$ENV_NAME' is ready."

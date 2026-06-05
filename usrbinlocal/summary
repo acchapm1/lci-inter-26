@@ -1,0 +1,31 @@
+#!/bin/bash
+
+summary() {
+  : << __HELPSTRING
+  # ===================================================================
+  # Summarizes user job statuses, defaults to $USER, accepts 
+  # comma separated list of users.
+  # ===================================================================
+__HELPSTRING
+  local userlist="${1:-$(whoami)}"
+  squeue -hu $userlist -o '%t' | awk -v userlist=$userlist '
+    BEGIN {
+      state_names["R"]  = "(Running)"
+      state_names["F"]  = "(Failed)"
+      state_names["PD"] = "(Pending)"
+      state_names["CG"] = "(Completing)"
+    }
+    { 
+      state_counts[$1]++
+    }
+    END {
+      for (state in state_counts) {
+        state_name  = state_names[state]
+        state_count = state_counts[state]
+        printf("%8s%-2s %-12s %d\n","", state, state_name, state_count)
+      }
+    }
+  ' # END
+}
+
+summary "$@"

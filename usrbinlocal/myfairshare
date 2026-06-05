@@ -1,0 +1,42 @@
+#!/bin/bash
+
+myfairshare() {
+  : << __HELPSTRING
+  # ===================================================================
+  # Bash function that displays scheduler/system utilization
+  # ===================================================================
+__HELPSTRING
+  local me=$(whoami)
+  local D=$(timeout 5 scontrol show config | awk '/DampeningFactor/ {print $NF}')
+  timeout 5 sshare -a \
+    | awk -v me="$me" -v D=$D '
+      NR == 1 {
+        print $1, $2, "RawUsage_CHE RawFairShare TargetFairShare RealFairShare"
+      }
+      $2 == me {
+        RawUsage = $5
+        fshare   = $NF
+        RawUsage_CHE = RawUsage/3600
+        if ( 0 < fshare && fshare < 1 ) {
+            N = -RawUsage_CHE/(log(fshare)/log(2))
+        } else if ( fshare == 0 ) {
+            N = -RawUsage_CHE/(log(1e-7)/log(2))
+        } else {
+            N = 1
+        }
+        Target_fshare = 2^(-RawUsage_CHE/10000)
+        Real_fshare   = 2^(-RawUsage_CHE/(N*D))
+        printf("%s %s %.1f %s %.7f %.7f\n",
+          $1,
+          $2,
+          RawUsage_CHE,
+          $NF,
+          Target_fshare,
+          Real_fshare \
+        )
+      }
+    ' \
+    | column -t
+}
+
+myfairshare $@
